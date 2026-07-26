@@ -8,7 +8,7 @@ Make your rich LaTeX messages without Telegram Premium.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-nano .env
+nano .env # Save: Ctrl+S , Exit: Ctrl+X
 ```
 
 Example `.env` file:
