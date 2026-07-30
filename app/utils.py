@@ -129,6 +129,26 @@ def is_latex_expression(text: str, bot_username: str | None = None):
 
   return has_number_and_operator or short_symbolic_terms or (has_relation and has_number)
 
+def _safe_latex_start(line: str, first_cmd_start: int) -> int:
+  depth = 0
+  cut = first_cmd_start
+  for i in range(first_cmd_start - 1, -1, -1):
+    c = line[i]
+    if c == "}":
+      depth += 1
+    elif c == "{":
+      if depth == 0:
+        return i
+      depth -= 1
+    elif depth == 0 and c in "_^":
+      return i
+    elif depth == 0 and c.isspace():
+      cut = i + 1
+      break
+    elif depth == 0:
+      cut = i
+  return cut
+
 def extract_latex_expression(text: str, bot_username: str | None = None):
   r"""Extract only the actual LaTeX/math part from a mixed message.
 
@@ -162,20 +182,23 @@ def extract_latex_expression(text: str, bot_username: str | None = None):
 
     candidate = ""
 
-    # If a line contains ordinary text before a real LaTeX command, start
-    # exactly from the first recognized command.
-    command_matches = [
-      match for match in LATEX_COMMAND_RE.finditer(line)
-      if match.group(1) in LATEX_COMMANDS
-    ]
-
-    if command_matches: candidate = line[command_matches[0].start():].strip()
+    if is_latex_expression(line): candidate = line
     else:
-      # Prefer extracting a compact equation from surrounding prose, e.g.
-      # ``please render E=mc^2`` -> ``E=mc^2``.
-      compact = COMPACT_MATH_RE.search(line)
-      if compact and is_latex_expression(compact.group(0)): candidate = compact.group(0).strip()
-      elif is_latex_expression(line): candidate = line
+      # If a line contains ordinary text before a real LaTeX command, start
+      # exactly from the first recognized command.
+      command_matches = [
+        match for match in LATEX_COMMAND_RE.finditer(line)
+        if match.group(1) in LATEX_COMMANDS
+      ]
+
+      if command_matches:
+        start = _safe_latex_start(line, command_matches[0].start())
+        candidate = line[start:].strip()
+      else:
+        # Prefer extracting a compact equation from surrounding prose, e.g.
+        # ``please render E=mc^2`` -> ``E=mc^2``.
+        compact = COMPACT_MATH_RE.search(line)
+        if compact and is_latex_expression(compact.group(0)): candidate = compact.group(0).strip()
 
     if candidate and is_latex_expression(candidate): current.append(candidate)
     elif current:
@@ -238,6 +261,11 @@ def _parse_unwrapped_rich_chunk(chunk: str, blocks: list[dict[str, object]]):
       flush_text()
       continue
 
+    if is_latex_expression(line):
+      flush_text()
+      _append_rich_block(blocks, "math", normalize_expression(line))
+      continue
+
     command_matches = [
       match
       for match in LATEX_COMMAND_RE.finditer(line)
@@ -246,9 +274,10 @@ def _parse_unwrapped_rich_chunk(chunk: str, blocks: list[dict[str, object]]):
 
     if command_matches:
       first = command_matches[0]
-      prefix = line[: first.start()].strip()
-      expression = line[first.start() :].strip()
-      
+      start = _safe_latex_start(line, first.start())
+      prefix = line[: start].strip()
+      expression = line[start :].strip()
+
       if prefix: text_buffer.append(prefix)
       flush_text()
 
@@ -266,21 +295,16 @@ def _parse_unwrapped_rich_chunk(chunk: str, blocks: list[dict[str, object]]):
       cursor = 0
       for match in matches:
         prefix = line[cursor : match.start()].strip()
-        
+
         if prefix: text_buffer.append(prefix)
         flush_text()
 
         _append_rich_block(blocks, "math", normalize_expression(match.group(0)))
         cursor = match.end()
-        
+
       suffix = line[cursor:].strip()
 
       if suffix: text_buffer.append(suffix)
-      continue
-
-    if is_latex_expression(line):
-      flush_text()
-      _append_rich_block(blocks, "math", normalize_expression(line))
       continue
 
     text_buffer.append(line)
@@ -344,7 +368,7 @@ def validate_expression(expression: str):
     command = unknown_commands[0]
     if "sqrt".startswith(command.lower()):
       return False, f"فرمول ناقصه؛ دستور \\{command} کامل نیست. شاید منظورت \\sqrt{{}} بوده."
-    
+
     return False, f"دستور \\{command} شناخته نشد یا ناقص است. نام دستور را کامل بنویس."
 
   brace_balance = 0
@@ -352,7 +376,7 @@ def validate_expression(expression: str):
     if char == "{": brace_balance += 1
     elif char == "}": brace_balance -= 1
     if brace_balance < 0: return False, "یک آکولاد اضافه بسته شده. ساختار { } را بررسی کن."
-  
+
   if brace_balance > 0:
     return False, "فرمول ناقصه؛ یک یا چند آکولاد { } بسته نشده."
 
@@ -377,7 +401,7 @@ def parse_channel_input(text: str):
       "t.me", "telegram.me", "www.t.me"
     }:
       raise ValueError("لینک عضویت باید از دامنه t.me باشد.")
-    
+
     return chat_hint, invite_link
 
   if value.startswith("-100"):
@@ -389,7 +413,7 @@ def parse_channel_input(text: str):
   if value.startswith("@"):
     if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", value):
       raise ValueError("یوزرنیم کانال نامعتبر است.")
-    
+
     return value, None
 
   parsed = urlparse(value)
@@ -399,7 +423,7 @@ def parse_channel_input(text: str):
     path = parsed.path.strip("/")
     if path.startswith("+") or path.startswith("joinchat/"):
       return None, value
-    
+
     raise ValueError("در مرحله اول فقط لینک دعوت خصوصی مثل https://t.me/+AbCdEf بفرست.")
 
   raise ValueError("یوزرنیم، آیدی عددی یا لینک دعوت خصوصی کانال را بفرست.")
@@ -440,7 +464,7 @@ _utf16_units = lambda value: (len(value.encode("utf-16-le")) // 2)
 
 def _utf16_to_char_index(value: str, units: int) -> int:
   if units <= 0: return 0
-  
+
   used = 0
   for index, char in enumerate(value):
     used += _utf16_units(char)
